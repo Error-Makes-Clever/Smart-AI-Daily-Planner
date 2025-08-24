@@ -24,35 +24,41 @@ def init_llm(api_key: str):
         raise ValueError("Google API Key is required")
     return ChatGoogleGenerativeAI(model="gemini-2.0-flash", api_key=api_key)
 
-def get_gmail_service(user_email: str, supabase, client_secret_json: str):
-    creds = None
+from flask import redirect, request, session, url_for
+from google_auth_oauthlib.flow import Flow
+import pickle, base64, json
 
-    resp = supabase.table("users").select("google_gmail_token").eq("email", user_email).execute()
-    if resp.data and resp.data[0].get("google_gmail_token"):
+SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+def get_gmail_service(user_email, supabase, client_secret_json):
+    """Redirect user to Gmail OAuth if not authenticated, else return creds."""
+
+    result = supabase.table("users").select("google_gmail_token").eq("email", user_email).execute()
+    if result.data and result.data[0].get("google_gmail_token"):
         try:
-            token_data = resp.data[0]["google_gmail_token"]
-            creds = pickle.loads(base64.b64decode(token_data.encode()))
-        except Exception as e:
-            creds = None
+            creds = pickle.loads(base64.b64decode(result.data[0]["google_gmail_token"]))
+            if creds and creds.valid:
+                return creds
+        except Exception:
+            pass  # fallback to re-auth
 
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
+    client_config = json.loads(client_secret_json)
 
-            token_data = base64.b64encode(pickle.dumps(creds)).decode()
-            supabase.table("users").update({"google_gmail_token": token_data}).eq("email", user_email).execute()
-        except Exception as e:
-            creds = None
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=SCOPES,
+        redirect_uri="https://<your-railway-domain>/oauth2callback"
+    )
 
-    if not creds or not creds.valid:
-        client_config = json.loads(client_secret_json)
-        flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-        creds = flow.run_local_server(port=0)
+    auth_url, state = flow.authorization_url(
+        prompt="consent",
+        access_type="offline",
+        include_granted_scopes="true"
+    )
 
-        token_data = base64.b64encode(pickle.dumps(creds)).decode()
-        supabase.table("users").update({"google_gmail_token": token_data}).eq("email", user_email).execute()
-
-    return build('gmail', 'v1', credentials=creds)
+    session["oauth_state"] = state
+    session["client_secret_json"] = client_secret_json
+    return redirect(auth_url)
 
 def get_last_48h_emails(user_email, supabase, client_secret_json):
     service = get_gmail_service(user_email, supabase, client_secret_json)
@@ -182,4 +188,5 @@ def send_email(user_email, supabase, client_secret_json, to, subject, body_text)
         sent_message = service.users().messages().send(userId='me', body=body).execute()
         return True, f"Email sent! Message ID: {sent_message['id']}"
     except HttpError as error:
+
         return False, f"An error occurred: {error}"
