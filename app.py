@@ -667,6 +667,35 @@ def get_ai_horoscope(sign: str, gemini_key: str):
     except Exception as e:
         return f"⚠️ Error: {e}"
 
+
+@app.route("/oauth2callback")
+def oauth2callback():
+    """Google redirects here after user grants Gmail access."""
+    state = session.get("oauth_state")
+    client_secret_json = session.get("client_secret_json")
+
+    if not state or not client_secret_json:
+        flash("OAuth session expired. Please try again.", "error")
+        return redirect(url_for("reminders"))
+
+    flow = Flow.from_client_config(
+        json.loads(client_secret_json),
+        scopes=SCOPES,
+        state=state,
+        redirect_uri="https://<your-railway-domain>/oauth2callback"
+    )
+
+    flow.fetch_token(authorization_response=request.url)
+    creds = flow.credentials
+
+    # Save to Supabase
+    token_data = base64.b64encode(pickle.dumps(creds)).decode()
+    supabase.table("users").update({"google_gmail_token": token_data}).eq("email", session["email"]).execute()
+
+    flash("✅ Gmail connected successfully!", "success")
+    return redirect(url_for("reminders"))
+
+
 @app.route("/email", methods=["GET", "POST"])
 def email_ai():
     if "email" not in session:
@@ -959,6 +988,7 @@ def travel():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))  # Railway injects PORT env var
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
